@@ -1,8 +1,20 @@
+<div align="center">
+
 # Smart311 AI Triage
 
 **An AI-powered civic issue reporting and routing system for NYC — built with Google Cloud, Gemini, and real NYC Open Data.**
 
 Built for the **Build With AI NYC Hackathon** — a command center that lets 311 operators see real complaints, AI-calculated severity scores, intelligent department routing, and AI-generated dispatch plans on a live map.
+
+![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)
+![Gemini](https://img.shields.io/badge/Gemini-Google%20AI-4285F4?logo=google&logoColor=white)
+![Google Cloud](https://img.shields.io/badge/Google%20Cloud-Run-4285F4?logo=google-cloud&logoColor=white)
+![NYC Open Data](https://img.shields.io/badge/NYC%20Open%20Data-API-FF6B6B?logo=data&logoColor=white)
+
+</div>
 
 ---
 
@@ -347,18 +359,6 @@ gcloud run deploy smart311-frontend \
 3. **API key in frontend**: NEXT_PUBLIC_ vars embedded at build time → runtime detection for production
 4. **Real-time updates**: WebSocket bridge to sync in-memory store → polling with 3-second intervals
 5. **API rate limits**: Fallback to keyword matching when Gemini unavailable
-
----
-
-## Future Enhancements
-
-- [ ] Wire Google ADK agent into production pipeline
-- [ ] Add historical trend analysis on dashboard
-- [ ] Implement actual 311 dispatch system integration
-- [ ] Add multi-borough support (all 5 NYC boroughs)
-- [ ] Natural disaster/emergency mode
-- [ ] Rate limiting and caching
-- [ ] Persistent storage (Cloud SQL/Cloud Firestore)
 
 ---
 
