@@ -123,8 +123,8 @@ GEMINI_API_KEY=your-api-key
 
 ## 👥 Team & Contributors
 
-*   **Jkanishkha0305**
-*   **JeethuSreeni**
+*   **Jkanishkha0305** - kj2675@nyu.edu
+*   **JeethuSreeni** - ja5163@nyu.edu
 
 ---
 
