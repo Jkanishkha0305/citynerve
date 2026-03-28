@@ -43,15 +43,14 @@ declare global {
   }
 }
 
-const SYSTEM_PROMPT = `You are Smart311, NYC's AI emergency triage assistant.
-When the user describes a problem:
-1. Immediately identify the complaint type from: pothole, water main, noise, gas leak, flooding, street light, rodent, heat, fire
-2. Confirm what you detected in 1 sentence: "I'm detecting a [TYPE]."
-3. Say: "Checking nearby city infrastructure..."
-4. After 2 seconds, present severity: "This is rated [LABEL] priority — [SCORE]/100. [KEY REASON]. Ready to submit to [DEPARTMENT]?"
-5. If user says yes/confirm/send → output JSON on its own line: {"action":"submit","complaint_type":"...","description":"..."}
-6. If user corrects → output JSON: {"action":"correct","complaint_type":"..."}
-Be concise. Max 2 sentences per response. Sound authoritative, not chatty.`;
+const SYSTEM_PROMPT = `You are Smart311, NYC's AI emergency triage assistant. Gather information through a SHORT natural conversation to file a 311 report.
+
+When user describes a problem:
+- Ask 1-2 short follow-up questions: location, severity, duration. One question at a time.
+- Once you have complaint type + location + key details, say: "Got it, generating your report now." then on a NEW LINE output ONLY this JSON (nothing else on that line):
+{"action":"submit","description":"<full description combining everything the user told you>"}
+- Never output JSON mid-sentence. Confirmation phrase first, then JSON on its own line.
+- Sound like a professional dispatcher. Be concise.`;
 
 interface GeminiAction {
   action: "submit" | "correct";
@@ -59,11 +58,16 @@ interface GeminiAction {
   description?: string;
 }
 
+export interface Message {
+  role: "user" | "assistant";
+  text: string;
+}
+
 interface UseGeminiLiveReturn {
   startSession: (mode: "voice" | "vision") => Promise<void>;
   stopSession: () => void;
   isActive: boolean;
-  transcript: string[];
+  messages: Message[];
   agentMessage: string;
   mode: "voice" | "vision" | null;
 }
@@ -72,10 +76,10 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8
 
 export function useGeminiLive(): UseGeminiLiveReturn {
   const [isActive, setIsActive] = useState(false);
-  const [transcript, setTranscript] = useState<string[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [agentMessage, setAgentMessage] = useState("");
   const [mode, setMode] = useState<"voice" | "vision" | null>(null);
-  
+
   const sessionRef = useRef<WebSocket | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -84,6 +88,7 @@ export function useGeminiLive(): UseGeminiLiveReturn {
   const frameIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const agentMessageRef = useRef("");
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const isActiveRef = useRef(false);
 
   const fetchApiKey = async (): Promise<string> => {
     try {
@@ -98,16 +103,17 @@ export function useGeminiLive(): UseGeminiLiveReturn {
   const startSession = useCallback(async (sessionMode: "voice" | "vision") => {
     try {
       const apiKey = await fetchApiKey();
-      
+
       if (!apiKey) {
         console.error("No API key found, falling back to Web Speech API");
       }
 
       setMode(sessionMode);
-      setTranscript([]);
+      setMessages([]);
       setAgentMessage("");
       agentMessageRef.current = "";
       setIsActive(true);
+      isActiveRef.current = true;
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
@@ -128,12 +134,12 @@ export function useGeminiLive(): UseGeminiLiveReturn {
 
       if (apiKey) {
         const wsUrl = `wss://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-live-001:streamConnect?key=${apiKey}`;
-        
+
         const ws = new WebSocket(wsUrl);
-        
+
         ws.onopen = () => {
           console.log("Gemini Live WebSocket opened");
-          
+
           const setupMsg = {
             setup: {
               model: "gemini-2.0-flash-live-001",
@@ -155,13 +161,13 @@ export function useGeminiLive(): UseGeminiLiveReturn {
         ws.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
-            
+
             if (data.serverContent?.modelTurn?.parts) {
               for (const part of data.serverContent.modelTurn.parts) {
                 if (part.text) {
                   agentMessageRef.current += part.text;
                   setAgentMessage(agentMessageRef.current);
-                  
+
                   const utterance = new SpeechSynthesisUtterance(part.text);
                   utterance.rate = 1.0;
                   window.speechSynthesis.speak(utterance);
@@ -182,9 +188,13 @@ export function useGeminiLive(): UseGeminiLiveReturn {
                 }
               }
             }
-            
+
             if (data.serverContent?.turnComplete) {
-              setTranscript((prev) => [...prev, agentMessageRef.current]);
+              const completedText = agentMessageRef.current;
+              agentMessageRef.current = "";
+              if (completedText) {
+                setMessages((prev) => [...prev, { role: "assistant", text: completedText }]);
+              }
             }
           } catch (e) {
             console.error("Error parsing WebSocket message:", e);
@@ -230,9 +240,9 @@ export function useGeminiLive(): UseGeminiLiveReturn {
         }
       } else {
         if ("webkitSpeechRecognition" in window || "SpeechRecognition" in window) {
-          const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-          const recognition = new SpeechRecognition();
-          
+          const SpeechRecognitionClass = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+          const recognition = new SpeechRecognitionClass();
+
           recognition.continuous = true;
           recognition.interimResults = true;
           recognition.lang = "en-US";
@@ -246,8 +256,8 @@ export function useGeminiLive(): UseGeminiLiveReturn {
               }
             }
             if (finalTranscript) {
-              agentMessageRef.current += finalTranscript;
-              setAgentMessage(agentMessageRef.current);
+              const trimmed = finalTranscript.trim();
+              setMessages((prev) => [...prev, { role: "user", text: trimmed }]);
             }
           };
 
@@ -256,7 +266,7 @@ export function useGeminiLive(): UseGeminiLiveReturn {
           };
 
           recognition.onend = () => {
-            if (isActive) {
+            if (isActiveRef.current) {
               try {
                 recognition.start();
               } catch {
@@ -325,10 +335,13 @@ export function useGeminiLive(): UseGeminiLiveReturn {
     } catch (error) {
       console.error("Failed to start session:", error);
       setIsActive(false);
+      isActiveRef.current = false;
     }
-  }, [isActive]);
+  }, []);
 
   const stopSession = useCallback(() => {
+    isActiveRef.current = false;
+
     if (sessionRef.current) {
       sessionRef.current.close();
       sessionRef.current = null;
@@ -365,7 +378,7 @@ export function useGeminiLive(): UseGeminiLiveReturn {
     startSession,
     stopSession,
     isActive,
-    transcript,
+    messages,
     agentMessage,
     mode,
   };

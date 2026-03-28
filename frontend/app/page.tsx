@@ -7,7 +7,7 @@ import { WaveformVisualizer } from "@/components/WaveformVisualizer";
 import { DraftCard } from "@/components/DraftCard";
 import { useGeminiLive } from "@/hooks/useGeminiLive";
 
-type AppState = "idle" | "recording" | "draft" | "success";
+type AppState = "idle" | "conversation" | "analyzing" | "draft" | "success";
 type Mode = "voice" | "vision";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
@@ -30,11 +30,11 @@ interface DraftData {
     distance: number;
   }>;
   nearby?: {
-    fire_stations?: Array<{name: string; distance_m: number}>;
+    fire_stations?: Array<{ name: string; distance_m: number }>;
     prior_complaints_30d?: number;
-    hospitals?: Array<{name: string; distance_m: number}>;
-    schools?: Array<{name: string; distance_m: number}>;
-    subway_entrances?: Array<{name: string; distance_m: number}>;
+    hospitals?: Array<{ name: string; distance_m: number }>;
+    schools?: Array<{ name: string; distance_m: number }>;
+    subway_entrances?: Array<{ name: string; distance_m: number }>;
   };
 }
 
@@ -44,13 +44,12 @@ export default function CitizenApp() {
   const [mode, setMode] = useState<Mode>("voice");
   const [coordinates, setCoordinates] = useState<Coordinates | null>(null);
   const [isDemoLocation, setIsDemoLocation] = useState(false);
-  const [transcript, setTranscript] = useState("");
   const [draft, setDraft] = useState<DraftData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
-  const { startSession, stopSession, isActive, agentMessage, mode: geminiMode } = useGeminiLive();
+  const { startSession, stopSession, isActive, messages, agentMessage, mode: geminiMode } = useGeminiLive();
 
   useEffect(() => {
     if ("geolocation" in navigator) {
@@ -73,36 +72,9 @@ export default function CitizenApp() {
     }
   }, []);
 
-  useEffect(() => {
-    const handleAction = async (event: Event) => {
-      const customEvent = event as CustomEvent;
-      const action = customEvent.detail;
-
-      if (action.action === "submit") {
-        await submitReport(action.description || transcript);
-      }
-    };
-
-    window.addEventListener("gemini-action", handleAction);
-    return () => window.removeEventListener("gemini-action", handleAction);
-  }, [transcript]);
-
-  useEffect(() => {
-    if (agentMessage && state === "recording") {
-      setTranscript(agentMessage);
-    }
-  }, [agentMessage, state]);
-
-  useEffect(() => {
-    if (videoStream && videoRef.current) {
-      videoRef.current.srcObject = videoStream;
-    }
-  }, [videoStream]);
-
-  const submitReport = async (description: string) => {
+  const submitReport = useCallback(async (description: string) => {
     if (!coordinates) return;
 
-    setIsLoading(true);
     try {
       const response = await fetch(`${API_BASE_URL}/api/report`, {
         method: "POST",
@@ -123,14 +95,33 @@ export default function CitizenApp() {
       setState("draft");
     } catch (error) {
       console.error("Failed to submit report:", error);
-    } finally {
-      setIsLoading(false);
+      setState("idle");
     }
-  };
+  }, [coordinates]);
+
+  useEffect(() => {
+    const handleAction = async (event: Event) => {
+      const customEvent = event as CustomEvent;
+      const action = customEvent.detail;
+
+      if (action.action === "submit") {
+        stopSession();
+        setState("analyzing");
+        await submitReport(action.description);
+      }
+    };
+
+    window.addEventListener("gemini-action", handleAction);
+    return () => window.removeEventListener("gemini-action", handleAction);
+  }, [submitReport, stopSession]);
+
+  useEffect(() => {
+    if (videoStream && videoRef.current) {
+      videoRef.current.srcObject = videoStream;
+    }
+  }, [videoStream]);
 
   const handleStartRecording = async () => {
-    setState("recording");
-    setTranscript("");
     setDraft(null);
 
     if (mode === "vision") {
@@ -142,21 +133,30 @@ export default function CitizenApp() {
       }
     }
 
+    setState("conversation");
     await startSession(mode);
   };
 
-  const handleStopRecording = useCallback(() => {
+  const handleStop = useCallback(async () => {
     stopSession();
-    
+
     if (videoStream) {
       videoStream.getTracks().forEach((track) => track.stop());
       setVideoStream(null);
     }
 
-    if (transcript && state === "recording") {
-      submitReport(transcript);
+    const userText = messages
+      .filter((m) => m.role === "user")
+      .map((m) => m.text)
+      .join(" ");
+
+    if (userText.trim()) {
+      setState("analyzing");
+      await submitReport(userText.trim());
+    } else {
+      setState("idle");
     }
-  }, [stopSession, videoStream, transcript, state]);
+  }, [stopSession, videoStream, messages, submitReport]);
 
   const handleConfirm = async () => {
     if (!draft) return;
@@ -180,17 +180,9 @@ export default function CitizenApp() {
     }
   };
 
-  const handleEdit = () => {
-    setState("recording");
-    setDraft(null);
-  };
-
   return (
-    <div 
-      className="min-h-screen bg-[#0a0a0a] text-white overflow-hidden relative"
-      onClick={() => state === "recording" && handleStopRecording()}
-    >
-      {mode === "vision" && state === "recording" && videoStream && (
+    <div className="min-h-screen bg-[#0a0a0a] text-white overflow-hidden relative">
+      {mode === "vision" && state === "conversation" && videoStream && (
         <video
           ref={videoRef}
           autoPlay
@@ -259,54 +251,89 @@ export default function CitizenApp() {
             </motion.div>
           )}
 
-          {state === "recording" && (
+          {state === "conversation" && (
             <motion.div
-              key="recording"
+              key="conversation"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="flex-1 flex flex-col items-center p-6 pt-16"
+              className="flex-1 flex flex-col p-6 pt-12"
             >
-              <div className="flex items-center gap-2 mb-12">
+              {/* Header */}
+              <div className="flex items-center gap-2 mb-6">
                 <span className="w-3 h-3 rounded-full bg-red-500 animate-pulse" />
-                <span className="text-red-500 font-medium">LIVE — Gemini is listening</span>
+                <span className="text-red-400 font-medium text-sm">LIVE — Gemini is listening</span>
               </div>
 
-              <WaveformVisualizer isActive={isActive} />
-
-              <p className="text-gray-400 mt-8 mb-4">
-                {mode === "vision" ? "Describe what you see..." : "Describe the emergency..."}
-              </p>
-
-              <div className="flex-1 w-full max-w-md overflow-y-auto mb-8">
-                <p className="text-white text-lg leading-relaxed">{transcript || "Listening..."}</p>
+              {/* Message list — scrollable */}
+              <div className="flex-1 overflow-y-auto flex flex-col gap-3 mb-6">
+                {messages.map((msg, i) => (
+                  <div
+                    key={i}
+                    className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm leading-relaxed ${
+                      msg.role === "user"
+                        ? "self-end bg-white/10 text-white"
+                        : "self-start bg-[#00ff88]/10 text-[#00ff88] border border-[#00ff88]/20"
+                    }`}
+                  >
+                    {msg.text}
+                  </div>
+                ))}
+                {messages.length === 0 && (
+                  <p className="text-gray-500 text-sm text-center mt-8">Listening... describe the issue</p>
+                )}
               </div>
 
-              <p className="text-gray-500 text-sm">Tap anywhere to stop</p>
+              {/* STOP button */}
+              <button
+                onClick={handleStop}
+                className="w-full py-4 rounded-2xl bg-white/5 border border-white/10 text-white font-medium text-sm hover:bg-white/10 transition-all"
+              >
+                Stop & Generate Report
+              </button>
+            </motion.div>
+          )}
+
+          {state === "analyzing" && (
+            <motion.div
+              key="analyzing"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex-1 flex flex-col items-center justify-center gap-4"
+            >
+              <div className="w-16 h-16 rounded-full border-4 border-[#00ff88] border-t-transparent animate-spin" />
+              <p className="text-[#00ff88] font-medium">Analyzing report...</p>
+              <p className="text-gray-500 text-sm">Checking nearby infrastructure</p>
             </motion.div>
           )}
 
           {state === "draft" && draft && (
             <motion.div
               key="draft"
-              initial={{ y: "100%" }}
-              animate={{ y: 0 }}
-              exit={{ y: "100%" }}
-              className="fixed inset-x-0 bottom-0 p-6"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex-1 flex flex-col p-6 pt-12"
             >
+              <p className="text-gray-400 text-sm text-center mb-4">Review your report</p>
               <DraftCard
                 severity={draft.label}
                 score={draft.severity}
                 complaintType={draft.complaint_type.replace("_", " ")}
                 description={draft.description}
-                facilities={draft.facilities}
+                facilities={draft.facilities || []}
                 department={draft.department}
                 onConfirm={handleConfirm}
-                onEdit={handleEdit}
-                fireStation={draft.nearby?.fire_stations?.[0] ? {
-                  name: draft.nearby.fire_stations[0].name,
-                  distance: draft.nearby.fire_stations[0].distance_m
-                } : null}
+                onEdit={() => { setState("idle"); setDraft(null); }}
+                fireStation={
+                  draft.nearby?.fire_stations?.[0]
+                    ? {
+                        name: draft.nearby.fire_stations[0].name,
+                        distance: draft.nearby.fire_stations[0].distance_m,
+                      }
+                    : null
+                }
                 priorComplaints={draft.nearby?.prior_complaints_30d ?? 0}
               />
             </motion.div>

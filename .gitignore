@@ -20,3 +20,4 @@ npm-debug.log*
 backend/BACKEND_UPGRADE_SPEC.md
 backend/BACKEND_SPEC.md
 frontend/REDESIGN_SPEC.md
+.gstack/

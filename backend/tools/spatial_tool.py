@@ -83,10 +83,17 @@ def get_nearby_facilities(lat: float, lon: float, radius_m: int = 500) -> Nearby
         except Exception:
             return 0
 
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        fut_hospitals = executor.submit(fetch_facilities, "HEALTH CARE")
+        fut_schools = executor.submit(fetch_facilities, "SCHOOLS (K-12)")
+        fut_subway = executor.submit(fetch_subway)
+        fut_fire = executor.submit(fetch_fire_stations)
+        fut_311 = executor.submit(fetch_311_history)
     return NearbyFacilities(
-        hospitals=fetch_facilities("HEALTH CARE"),
-        schools=fetch_facilities("SCHOOLS (K-12)"),
-        subway_entrances=fetch_subway(),
-        fire_stations=fetch_fire_stations(),
-        prior_complaints_30d=fetch_311_history(),
+        hospitals=fut_hospitals.result(),
+        schools=fut_schools.result(),
+        subway_entrances=fut_subway.result(),
+        fire_stations=fut_fire.result(),
+        prior_complaints_30d=fut_311.result(),
     )
