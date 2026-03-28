@@ -70,9 +70,13 @@ interface UseGeminiLiveReturn {
   messages: Message[];
   agentMessage: string;
   mode: "voice" | "vision" | null;
+  getTranscript: () => string;
 }
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
+const VERTEX_API_KEY = process.env.NEXT_PUBLIC_VERTEX_API_KEY || "";
+const VERTEX_ENDPOINT = process.env.NEXT_PUBLIC_VERTEX_ENDPOINT || "https://aiplatform.googleapis.com/v1/publishers/google/models";
+const VERTEX_MODEL = process.env.NEXT_PUBLIC_VERTEX_MODEL || "gemini-2.5-flash-lite";
 
 export function useGeminiLive(): UseGeminiLiveReturn {
   const [isActive, setIsActive] = useState(false);
@@ -87,6 +91,7 @@ export function useGeminiLive(): UseGeminiLiveReturn {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const frameIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const agentMessageRef = useRef("");
+  const interimTranscriptRef = useRef("");
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const isActiveRef = useRef(false);
 
@@ -132,206 +137,108 @@ export function useGeminiLive(): UseGeminiLiveReturn {
         canvasRef.current.height = 480;
       }
 
-      if (apiKey) {
-        const wsUrl = `wss://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-live-001:streamConnect?key=${apiKey}`;
-
-        const ws = new WebSocket(wsUrl);
-
-        ws.onopen = () => {
-          console.log("Gemini Live WebSocket opened");
-
-          const setupMsg = {
-            setup: {
-              model: "gemini-2.0-flash-live-001",
-              systemInstruction: {
-                role: "user",
-                parts: [{ text: SYSTEM_PROMPT }],
-              },
-              modalities: ["AUDIO", "TEXT"],
-              inputAudioFormat: "PCM_16K",
-              outputAudioFormat: "PCM_16K",
-              speechConfig: {
-                languageCode: "en-US",
-              },
-            },
-          };
-          ws.send(JSON.stringify(setupMsg));
-        };
-
-        ws.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-
-            if (data.serverContent?.modelTurn?.parts) {
-              for (const part of data.serverContent.modelTurn.parts) {
-                if (part.text) {
-                  agentMessageRef.current += part.text;
-                  setAgentMessage(agentMessageRef.current);
-
-                  const utterance = new SpeechSynthesisUtterance(part.text);
-                  utterance.rate = 1.0;
-                  window.speechSynthesis.speak(utterance);
-
-                  const jsonMatch = part.text.match(/\{[^{}]*\}/);
-                  if (jsonMatch) {
-                    try {
-                      const action: GeminiAction = JSON.parse(jsonMatch[0]);
-                      if (action.action === "submit" || action.action === "correct") {
-                        window.dispatchEvent(
-                          new CustomEvent("gemini-action", { detail: action })
-                        );
-                      }
-                    } catch (e) {
-                      console.error("Failed to parse JSON action:", e);
-                    }
-                  }
-                }
-              }
+      // Always use Web Speech API for reliable STT in browser
+      // Use Gemini REST API for follow-up questions after each utterance
+      const askGemini = async (history: Message[], userText: string) => {
+        if (!isActiveRef.current) return;
+        // Use Vertex AI key from env (works even if backend key is exhausted)
+        const vertexKey = VERTEX_API_KEY || apiKey;
+        if (!vertexKey) return;
+        try {
+          const contents = [
+            ...history.map(m => ({
+              role: m.role === "user" ? "user" : "model",
+              parts: [{ text: m.text }]
+            })),
+            { role: "user", parts: [{ text: userText }] }
+          ];
+          const res = await fetch(
+            `${VERTEX_ENDPOINT}/${VERTEX_MODEL}:generateContent?key=${vertexKey}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+                contents,
+              }),
             }
+          );
+          const data = await res.json();
+          const reply: string = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+          if (!reply || !isActiveRef.current) return;
 
-            if (data.serverContent?.turnComplete) {
-              const completedText = agentMessageRef.current;
-              agentMessageRef.current = "";
-              if (completedText) {
-                setMessages((prev) => [...prev, { role: "assistant", text: completedText }]);
+          // Speak the reply (strip JSON line before speaking)
+          const spokenText = reply.replace(/\{[^{}]*\}/g, "").trim();
+          if (spokenText) {
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(spokenText);
+            utterance.rate = 1.1;
+            window.speechSynthesis.speak(utterance);
+          }
+
+          setMessages(prev => [...prev, { role: "assistant", text: spokenText || reply }]);
+
+          // Check for submit action
+          const jsonMatch = reply.match(/\{[^{}]*"action"[^{}]*\}/);
+          if (jsonMatch) {
+            try {
+              const action: GeminiAction = JSON.parse(jsonMatch[0]);
+              if (action.action === "submit" || action.action === "correct") {
+                window.dispatchEvent(new CustomEvent("gemini-action", { detail: action }));
               }
+            } catch { /* ignore */ }
+          }
+        } catch (e) {
+          console.error("Gemini REST error:", e);
+        }
+      };
+
+      if ("webkitSpeechRecognition" in window || "SpeechRecognition" in window) {
+        const SpeechRecognitionClass = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+        const recognition = new SpeechRecognitionClass();
+
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = "en-US";
+
+        recognition.onresult = (event: any) => {
+          let finalTranscript = "";
+          let interimTranscript = "";
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const transcriptText = event.results[i][0].transcript;
+            if (event.results[i].isFinal) {
+              finalTranscript += transcriptText + " ";
+            } else {
+              interimTranscript += transcriptText;
             }
-          } catch (e) {
-            console.error("Error parsing WebSocket message:", e);
+          }
+          if (finalTranscript) {
+            const trimmed = finalTranscript.trim();
+            interimTranscriptRef.current = "";
+            setMessages(prev => {
+              const updated = [...prev, { role: "user" as const, text: trimmed }];
+              // Ask Gemini after updating messages
+              askGemini(prev, trimmed);
+              return updated;
+            });
+          } else if (interimTranscript) {
+            interimTranscriptRef.current = interimTranscript;
           }
         };
 
-        ws.onerror = (error) => {
-          console.error("WebSocket error:", error);
+        recognition.onerror = (event: any) => {
+          console.error("Speech recognition error:", event.error);
         };
 
-        ws.onclose = () => {
-          console.log("WebSocket closed");
+        recognition.onend = () => {
+          if (isActiveRef.current) {
+            try { recognition.start(); } catch { /* stopped */ }
+          }
         };
 
-        sessionRef.current = ws;
-
-        if (sessionMode === "vision" && canvasRef.current && videoRef.current) {
-          frameIntervalRef.current = setInterval(() => {
-            if (!sessionRef.current || !canvasRef.current || !videoRef.current) return;
-            if (sessionRef.current.readyState !== WebSocket.OPEN) return;
-
-            const ctx = canvasRef.current.getContext("2d");
-            if (!ctx) return;
-
-            ctx.drawImage(videoRef.current, 0, 0, 640, 480);
-            const dataUrl = canvasRef.current.toDataURL("image/jpeg", 0.7);
-            const base64 = dataUrl.replace(/^data:image\/jpeg;base64,/, "");
-
-            const msg = {
-              clientContent: {
-                turns: [{
-                  role: "user",
-                  parts: [{
-                    mimeType: "image/jpeg",
-                    data: base64,
-                  }],
-                }],
-                turnComplete: false,
-              },
-            };
-            sessionRef.current.send(JSON.stringify(msg));
-          }, 2000);
-        }
-      } else {
-        if ("webkitSpeechRecognition" in window || "SpeechRecognition" in window) {
-          const SpeechRecognitionClass = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-          const recognition = new SpeechRecognitionClass();
-
-          recognition.continuous = true;
-          recognition.interimResults = true;
-          recognition.lang = "en-US";
-
-          recognition.onresult = (event: any) => {
-            let finalTranscript = "";
-            for (let i = event.resultIndex; i < event.results.length; i++) {
-              const transcriptText = event.results[i][0].transcript;
-              if (event.results[i].isFinal) {
-                finalTranscript += transcriptText + " ";
-              }
-            }
-            if (finalTranscript) {
-              const trimmed = finalTranscript.trim();
-              setMessages((prev) => [...prev, { role: "user", text: trimmed }]);
-            }
-          };
-
-          recognition.onerror = (event: any) => {
-            console.error("Speech recognition error:", event.error);
-          };
-
-          recognition.onend = () => {
-            if (isActiveRef.current) {
-              try {
-                recognition.start();
-              } catch {
-                // Recognition stopped
-              }
-            }
-          };
-
-          recognitionRef.current = recognition;
-          recognition.start();
-        }
+        recognitionRef.current = recognition;
+        recognition.start();
       }
-
-      const audioContext = new AudioContext({ sampleRate: 16000 });
-      audioContextRef.current = audioContext;
-
-      const source = audioContext.createMediaStreamSource(stream);
-      const processor = audioContext.createScriptProcessor(4096, 1, 1);
-
-      const sendAudioChunk = (audioData: Float32Array) => {
-        if (!sessionRef.current) return;
-        if (sessionRef.current.readyState !== WebSocket.OPEN) return;
-
-        const int16Array = new Int16Array(audioData.length);
-        for (let i = 0; i < audioData.length; i++) {
-          int16Array[i] = Math.max(-32768, Math.min(32767, Math.floor(audioData[i] * 32767)));
-        }
-
-        const base64 = btoa(String.fromCharCode(...new Uint8Array(int16Array.buffer)));
-
-        const msg = {
-          clientContent: {
-            turns: [{
-              role: "user",
-              parts: [{
-                mimeType: "audio/pcm;rate=16000",
-                data: base64,
-              }],
-            }],
-            turnComplete: false,
-          },
-        };
-        sessionRef.current.send(JSON.stringify(msg));
-      };
-
-      let audioBuffer: Float32Array[] = [];
-
-      processor.onaudioprocess = (e) => {
-        const data = e.inputBuffer.getChannelData(0);
-        audioBuffer.push(new Float32Array(data));
-
-        if (audioBuffer.length >= 6) {
-          const combined = new Float32Array(audioBuffer.reduce((acc, arr) => acc + arr.length, 0));
-          let offset = 0;
-          audioBuffer.forEach((arr) => {
-            combined.set(arr, offset);
-            offset += arr.length;
-          });
-          audioBuffer = [];
-          sendAudioChunk(combined);
-        }
-      };
-
-      source.connect(processor);
-      processor.connect(audioContext.destination);
     } catch (error) {
       console.error("Failed to start session:", error);
       setIsActive(false);
@@ -374,6 +281,11 @@ export function useGeminiLive(): UseGeminiLiveReturn {
     setMode(null);
   }, []);
 
+  const getTranscript = useCallback((): string => {
+    const fromMessages = messages.filter(m => m.role === "user").map(m => m.text).join(" ");
+    return (fromMessages + " " + interimTranscriptRef.current).trim();
+  }, [messages]);
+
   return {
     startSession,
     stopSession,
@@ -381,5 +293,6 @@ export function useGeminiLive(): UseGeminiLiveReturn {
     messages,
     agentMessage,
     mode,
+    getTranscript,
   };
 }

@@ -1,14 +1,18 @@
-import asyncio, os, json
-from fastapi import FastAPI, WebSocket, BackgroundTasks
+import asyncio, os, json, random
+from datetime import datetime
+from dotenv import load_dotenv
+from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-from datetime import datetime
-import random
 from agents.orchestrator import submit_report, confirm_report, report_store
 from tools.report_store import Report
 from tools.severity_engine import calculate_severity
-from tools.spatial_tool import NearbyFacilities
+from tools.spatial_tool import get_nearby_facilities, NearbyFacilities
+from tools.nyc_311_tool import fetch_nyc_311_data
+from tools.event_bus import agent_bus
+
+load_dotenv()
 
 app = FastAPI(title="Smart311 Triage API")
 
@@ -21,10 +25,11 @@ app.add_middleware(
 )
 
 class ReportRequest(BaseModel):
-    transcript: str
+    transcript: Optional[str] = None
     lat: float
     lon: float
     image_description: Optional[str] = None
+    image_b64: Optional[str] = None
 
 class ConfirmRequest(BaseModel):
     report_id: str
@@ -36,7 +41,7 @@ async def health():
 
 @app.post("/api/report")
 async def api_submit_report(req: ReportRequest):
-    return await submit_report(req.transcript, req.lat, req.lon, req.image_description)
+    return await submit_report(req.transcript or "", req.lat, req.lon, req.image_description, req.image_b64)
 
 @app.post("/api/confirm")
 async def api_confirm_report(req: ConfirmRequest):
@@ -45,6 +50,23 @@ async def api_confirm_report(req: ConfirmRequest):
 @app.get("/api/queue")
 async def get_queue():
     return report_store.get_all_dicts()
+
+@app.post("/api/dispatch/{report_id}")
+async def api_dispatch_report(report_id: str):
+    from agents.dispatch_agent import dispatch_report
+    report = report_store.get_by_id(report_id)
+    if not report:
+        return {"error": "Report not found"}
+    nearby = await asyncio.to_thread(get_nearby_facilities, report.lat, report.lon, 500)
+    nearby_dict = {
+        "hospitals": nearby.hospitals[:2],
+        "fire_stations": nearby.fire_stations[:1],
+        "schools": nearby.schools[:2],
+        "subway_entrances": nearby.subway_entrances[:2],
+    }
+    plan = await dispatch_report(report.to_dict(), nearby_dict)
+    report_store.update(report_id, status="DISPATCHED")
+    return {"plan": plan, "report_id": report_id, "status": "dispatched"}
 
 @app.get("/api/config")
 async def get_config():
@@ -66,6 +88,72 @@ async def simulate_cluster():
         )
         results.append(result)
     return {"simulated": len(results), "reports": results}
+
+@app.post("/api/load-311")
+async def load_real_311():
+    """
+    Load real 311 complaints from NYC Open Data API.
+    Pulls last 24 hours of Manhattan complaints and adds them to the queue.
+    """
+    borough = "MANHATTAN"
+    limit = 100
+    
+    complaints = fetch_nyc_311_data(limit=limit, hours=24, borough_filter=borough)
+    
+    added_reports = []
+    skipped_count = 0
+    
+    for complaint in complaints:
+        hour = datetime.now().hour
+        
+        nearby = await asyncio.to_thread(get_nearby_facilities, complaint.latitude, complaint.longitude)
+        
+        existing = report_store.get_queue()
+        cluster_count = sum(
+            1 for r in existing 
+            if abs(r.lat - complaint.latitude) < 0.005 
+            and abs(r.lon - complaint.longitude) < 0.005
+            and r.complaint_type == complaint.complaint_type
+        ) + 1
+        
+        severity = calculate_severity(
+            complaint.complaint_type,
+            complaint.latitude,
+            complaint.longitude,
+            hour,
+            nearby,
+            cluster_count
+        )
+        
+        report = Report(
+            id=f"nyc-{complaint.unique_key[:8]}",
+            complaint_type=complaint.complaint_type,
+            description=complaint.descriptor or f"NYC 311: {complaint.complaint_type}",
+            lat=complaint.latitude,
+            lon=complaint.longitude,
+            address=complaint.address,
+            severity=severity.score,
+            label=severity.label,
+            department=severity.department,
+            reasons=severity.reasons + [f"Source: NYC Open Data 311 API — {complaint.agency}"],
+            submitted_at=datetime.now(),
+            status="PENDING"
+        )
+        
+        existing_ids = [r.id for r in report_store.get_queue()]
+        if report.id not in existing_ids:
+            report_store.add(report)
+            added_reports.append(report)
+        else:
+            skipped_count += 1
+    
+    return {
+        "loaded": len(added_reports),
+        "skipped": skipped_count,
+        "total_complaints_found": len(complaints),
+        "source": "NYC Open Data 311 API",
+        "filter": f"{borough}, last 24 hours"
+    }
 
 @app.websocket("/ws/queue")
 async def ws_queue(websocket: WebSocket):
@@ -92,6 +180,182 @@ async def ws_queue(websocket: WebSocket):
         pass
     finally:
         report_store.unsubscribe(sync_send_update)
+
+# ── A2A Agent Capability Cards ──────────────────────────────────────────────
+# Each agent exposes a /.well-known/agent.json capability card per Google A2A spec
+
+@app.get("/agents/intake/.well-known/agent.json")
+async def intake_agent_card():
+    return {
+        "name": "smart311-intake-agent",
+        "description": "Classifies NYC 311 complaints from voice transcripts using Gemini",
+        "version": "1.0.0",
+        "provider": {"organization": "Smart311 AI", "url": "https://smart311.ai"},
+        "capabilities": {"streaming": False, "pushNotifications": False},
+        "skills": [{
+            "id": "classify_complaint",
+            "name": "Classify Complaint",
+            "description": "Extracts complaint_type, description, address from transcript",
+            "inputModes": ["text"],
+            "outputModes": ["application/json"],
+            "tags": ["nlp", "classification", "gemini"]
+        }]
+    }
+
+@app.get("/agents/spatial/.well-known/agent.json")
+async def spatial_agent_card():
+    return {
+        "name": "smart311-spatial-agent",
+        "description": "Scans NYC Open Data for nearby hospitals, schools, subway, fire stations",
+        "version": "1.0.0",
+        "provider": {"organization": "Smart311 AI", "url": "https://smart311.ai"},
+        "capabilities": {"streaming": False, "pushNotifications": False},
+        "skills": [{
+            "id": "scan_vicinity",
+            "name": "Scan Vicinity",
+            "description": "Returns nearby infrastructure within 500m using 5 parallel NYC Open Data API calls",
+            "inputModes": ["application/json"],
+            "outputModes": ["application/json"],
+            "tags": ["spatial", "nyc-open-data", "infrastructure"]
+        }]
+    }
+
+@app.get("/agents/severity/.well-known/agent.json")
+async def severity_agent_card():
+    return {
+        "name": "smart311-severity-engine",
+        "description": "Computes contextual severity score and routes to NYC department",
+        "version": "1.0.0",
+        "provider": {"organization": "Smart311 AI", "url": "https://smart311.ai"},
+        "capabilities": {"streaming": False, "pushNotifications": False},
+        "skills": [{
+            "id": "calculate_severity",
+            "name": "Calculate Severity",
+            "description": "Scores 0-100 using base type + proximity modifiers + cluster + rush hour",
+            "inputModes": ["application/json"],
+            "outputModes": ["application/json"],
+            "tags": ["severity", "routing", "triage"]
+        }]
+    }
+
+@app.get("/agents/orchestrator/.well-known/agent.json")
+async def orchestrator_agent_card():
+    return {
+        "name": "smart311-orchestrator",
+        "description": "ADK Orchestrator: fans out to intake + spatial agents, then severity engine",
+        "version": "1.0.0",
+        "provider": {"organization": "Smart311 AI", "url": "https://smart311.ai"},
+        "capabilities": {"streaming": True, "pushNotifications": True},
+        "skills": [{
+            "id": "triage_report",
+            "name": "Triage Report",
+            "description": "End-to-end 311 report triage: intake → spatial (A2A) → severity → dispatch",
+            "inputModes": ["text", "application/json"],
+            "outputModes": ["application/json"],
+            "tags": ["orchestration", "a2a", "adk", "triage"]
+        }]
+    }
+
+# ── A2A Task Endpoints ────────────────────────────────────────────────────────
+
+class IntakeTaskRequest(BaseModel):
+    transcript: str
+    image_description: Optional[str] = None
+    lat: float = 0
+    lon: float = 0
+
+class SpatialTaskRequest(BaseModel):
+    lat: float
+    lon: float
+
+class SeverityTaskRequest(BaseModel):
+    complaint_type: str
+    lat: float
+    lon: float
+    hospitals: list = []
+    schools: list = []
+    subway_entrances: list = []
+    fire_stations: list = []
+    prior_complaints_30d: int = 0
+    cluster_count: int = 1
+
+@app.post("/agents/intake/tasks")
+async def intake_task(req: IntakeTaskRequest):
+    from agents.intake_agent import process_intake
+    result = await process_intake(req.transcript, req.image_description, req.lat, req.lon)
+    return {"status": "completed", "result": result, "agent": "smart311-intake-agent"}
+
+@app.post("/agents/spatial/tasks")
+async def spatial_task(req: SpatialTaskRequest):
+    nearby = await asyncio.to_thread(get_nearby_facilities, req.lat, req.lon)
+    return {
+        "status": "completed",
+        "agent": "smart311-spatial-agent",
+        "result": {
+            "hospitals": nearby.hospitals[:3],
+            "schools": nearby.schools[:3],
+            "subway_entrances": nearby.subway_entrances[:3],
+            "fire_stations": nearby.fire_stations[:2],
+            "prior_complaints_30d": nearby.prior_complaints_30d,
+        }
+    }
+
+@app.post("/agents/severity/tasks")
+async def severity_task(req: SeverityTaskRequest):
+    from tools.severity_engine import calculate_severity
+    from tools.spatial_tool import NearbyFacilities
+    nearby = NearbyFacilities(
+        hospitals=req.hospitals, schools=req.schools,
+        subway_entrances=req.subway_entrances, fire_stations=req.fire_stations,
+        prior_complaints_30d=req.prior_complaints_30d
+    )
+    severity = calculate_severity(
+        req.complaint_type, req.lat, req.lon,
+        datetime.now().hour, nearby, req.cluster_count
+    )
+    return {
+        "status": "completed",
+        "agent": "smart311-severity-engine",
+        "result": {
+            "score": severity.score, "label": severity.label,
+            "department": severity.department, "reasons": severity.reasons
+        }
+    }
+
+@app.get("/agents")
+async def list_agents():
+    """List all registered A2A agents."""
+    return {
+        "agents": [
+            {"name": "smart311-orchestrator", "card": "/agents/orchestrator/.well-known/agent.json", "tasks": "/agents/orchestrator/tasks"},
+            {"name": "smart311-intake-agent", "card": "/agents/intake/.well-known/agent.json", "tasks": "/agents/intake/tasks"},
+            {"name": "smart311-spatial-agent", "card": "/agents/spatial/.well-known/agent.json", "tasks": "/agents/spatial/tasks"},
+            {"name": "smart311-severity-engine", "card": "/agents/severity/.well-known/agent.json", "tasks": "/agents/severity/tasks"},
+        ]
+    }
+
+@app.websocket("/ws/agents")
+async def ws_agents(websocket: WebSocket):
+    await websocket.accept()
+    loop = asyncio.get_event_loop()
+
+    async def send_event(data):
+        try:
+            await websocket.send_text(json.dumps(data))
+        except Exception:
+            pass
+
+    def sync_send(data):
+        asyncio.run_coroutine_threadsafe(send_event(data), loop)
+
+    agent_bus.subscribe(sync_send)
+    try:
+        while True:
+            await asyncio.sleep(1)
+    except Exception:
+        pass
+    finally:
+        agent_bus.unsubscribe(sync_send)
 
 @app.on_event("startup")
 async def seed_data():

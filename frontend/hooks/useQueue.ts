@@ -25,7 +25,10 @@ interface UseQueueReturn {
   reconnect: () => void;
 }
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
+const API_BASE_URL = 
+  typeof window !== 'undefined' && window.location.hostname.includes('run.app')
+    ? "https://smart311-backend-446616000971.us-east1.run.app"
+    : process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8080";
 const MAX_RECONNECT_DELAY = 8000;
 const POLL_INTERVAL = 3000;
 
@@ -39,10 +42,12 @@ export function useQueue(): UseQueueReturn {
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reconnectAttemptRef = useRef(0);
   const wsFailedRef = useRef(false);
+  const initializedRef = useRef(false);
 
-  // REST polling fallback — used when WebSocket is unavailable (e.g. Cloud Run HTTP/2)
+  // REST polling — primary method for Cloud Run compatibility
   const startPolling = useCallback(() => {
     if (pollIntervalRef.current) return;
+    
     const poll = async () => {
       try {
         const res = await fetch(`${API_BASE_URL}/api/queue`);
@@ -52,16 +57,33 @@ export function useQueue(): UseQueueReturn {
           setConnected(true);
           setReconnecting(false);
           setError(null);
+          initializedRef.current = true;
+        } else {
+          setConnected(false);
         }
       } catch {
         setConnected(false);
       }
     };
+    
+    // Initial poll immediately
     poll();
+    
+    // Then poll every 3 seconds
     pollIntervalRef.current = setInterval(poll, POLL_INTERVAL);
   }, []);
 
   const connect = useCallback(() => {
+    // For production (Cloud Run), use polling as primary method
+    // WebSockets don't work well with Cloud Run's HTTP/2
+    if (typeof window !== 'undefined') {
+      const isProduction = window.location.hostname.includes('run.app');
+      if (isProduction || wsFailedRef.current) {
+        startPolling();
+        return;
+      }
+    }
+    
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
     if (wsFailedRef.current) { startPolling(); return; }
 
@@ -77,7 +99,7 @@ export function useQueue(): UseQueueReturn {
           wsFailedRef.current = true;
           startPolling();
         }
-      }, 5000);
+      }, 3000);
 
       ws.onopen = () => {
         clearTimeout(failTimer);

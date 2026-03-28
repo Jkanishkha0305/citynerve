@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useRouter } from "next/navigation";
-import { WaveformVisualizer } from "@/components/WaveformVisualizer";
 import { DraftCard } from "@/components/DraftCard";
 import { useGeminiLive } from "@/hooks/useGeminiLive";
 
@@ -17,48 +16,25 @@ interface Coordinates {
   lon: number;
 }
 
-interface DraftData {
-  severity: number;
-  label: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
-  complaint_type: string;
-  description: string;
-  department: string;
-  reasons: string[];
-  facilities: Array<{
-    type: "hospital" | "subway" | "school";
-    name: string;
-    distance: number;
-  }>;
-  nearby?: {
-    fire_stations?: Array<{ name: string; distance_m: number }>;
-    prior_complaints_30d?: number;
-    hospitals?: Array<{ name: string; distance_m: number }>;
-    schools?: Array<{ name: string; distance_m: number }>;
-    subway_entrances?: Array<{ name: string; distance_m: number }>;
-  };
-}
-
 export default function CitizenApp() {
   const router = useRouter();
   const [state, setState] = useState<AppState>("idle");
   const [mode, setMode] = useState<Mode>("voice");
   const [coordinates, setCoordinates] = useState<Coordinates | null>(null);
   const [isDemoLocation, setIsDemoLocation] = useState(false);
-  const [draft, setDraft] = useState<DraftData | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [draft, setDraft] = useState<any>(null);
   const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
+  const [isVisionScan, setIsVisionScan] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { startSession, stopSession, isActive, messages, agentMessage, mode: geminiMode } = useGeminiLive();
+  const { startSession, stopSession, messages, getTranscript } = useGeminiLive();
 
   useEffect(() => {
     if ("geolocation" in navigator) {
       navigator.geolocation.getCurrentPosition(
         (position) => {
-          setCoordinates({
-            lat: position.coords.latitude,
-            lon: position.coords.longitude,
-          });
+          setCoordinates({ lat: position.coords.latitude, lon: position.coords.longitude });
           setIsDemoLocation(false);
         },
         () => {
@@ -66,15 +42,11 @@ export default function CitizenApp() {
           setIsDemoLocation(true);
         }
       );
-    } else {
-      setCoordinates({ lat: 40.7580, lon: -73.9855 });
-      setIsDemoLocation(true);
     }
   }, []);
 
-  const submitReport = useCallback(async (description: string) => {
+  const submitReport = useCallback(async (description: string, imageB64?: string) => {
     if (!coordinates) return;
-
     try {
       const response = await fetch(`${API_BASE_URL}/api/report`, {
         method: "POST",
@@ -83,291 +55,200 @@ export default function CitizenApp() {
           transcript: description,
           lat: coordinates.lat,
           lon: coordinates.lon,
+          image_b64: imageB64,
         }),
       });
-
-      if (!response.ok) {
-        throw new Error("Failed to submit report");
-      }
-
       const data = await response.json();
       setDraft(data);
       setState("draft");
     } catch (error) {
-      console.error("Failed to submit report:", error);
+      console.error("Report failed:", error);
       setState("idle");
+    } finally {
+      setIsVisionScan(false);
     }
   }, [coordinates]);
 
-  useEffect(() => {
-    const handleAction = async (event: Event) => {
-      const customEvent = event as CustomEvent;
-      const action = customEvent.detail;
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-      if (action.action === "submit") {
-        stopSession();
-        setState("analyzing");
-        await submitReport(action.description);
-      }
+    setIsVisionScan(true);
+    setState("analyzing");
+
+    const reader = new FileReader();
+    reader.onloadend = async () => {
+      const base64String = (reader.result as string).split(",")[1];
+      await submitReport("Visual report submitted via photo upload.", base64String);
     };
+    reader.readAsDataURL(file);
+  };
 
-    window.addEventListener("gemini-action", handleAction);
-    return () => window.removeEventListener("gemini-action", handleAction);
-  }, [submitReport, stopSession]);
-
-  useEffect(() => {
-    if (videoStream && videoRef.current) {
-      videoRef.current.srcObject = videoStream;
-    }
-  }, [videoStream]);
-
-  const handleStartRecording = async () => {
-    setDraft(null);
-
+  const handleStart = async () => {
     if (mode === "vision") {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
         setVideoStream(stream);
-      } catch (error) {
-        console.error("Failed to get video stream:", error);
-      }
+      } catch (e) { console.error(e); }
     }
-
     setState("conversation");
     await startSession(mode);
   };
 
   const handleStop = useCallback(async () => {
     stopSession();
-
     if (videoStream) {
-      videoStream.getTracks().forEach((track) => track.stop());
+      videoStream.getTracks().forEach(t => t.stop());
       setVideoStream(null);
     }
-
-    const userText = messages
-      .filter((m) => m.role === "user")
-      .map((m) => m.text)
-      .join(" ");
-
-    if (userText.trim()) {
+    const text = getTranscript();
+    if (text) {
       setState("analyzing");
-      await submitReport(userText.trim());
+      await submitReport(text);
     } else {
       setState("idle");
     }
-  }, [stopSession, videoStream, messages, submitReport]);
+  }, [stopSession, videoStream, getTranscript, submitReport]);
 
   const handleConfirm = async () => {
     if (!draft) return;
-
-    setIsLoading(true);
     try {
       await fetch(`${API_BASE_URL}/api/confirm`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ report_id: draft.complaint_type }),
+        body: JSON.stringify({ report_id: draft.id }),
       });
-
       setState("success");
-      setTimeout(() => {
-        router.push("/dashboard");
-      }, 2000);
-    } catch (error) {
-      console.error("Failed to confirm report:", error);
-    } finally {
-      setIsLoading(false);
-    }
+      setTimeout(() => router.push("/dashboard"), 1500);
+    } catch (e) { console.error(e); }
   };
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-white overflow-hidden relative">
+    <div className="min-h-screen bg-[#050505] text-white overflow-hidden relative cyber-grid scanline">
       {mode === "vision" && state === "conversation" && videoStream && (
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
-          className="absolute inset-0 w-full h-full object-cover opacity-30"
-        />
+        <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover opacity-40 grayscale" />
       )}
 
-      <div className="relative z-10 min-h-screen flex flex-col">
+      <div className="relative z-10 min-h-screen flex flex-col items-center">
         <AnimatePresence mode="wait">
           {state === "idle" && (
-            <motion.div
-              key="idle"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="flex-1 flex flex-col items-center justify-center p-6"
-            >
-              <h1 className="text-5xl font-bold mb-2">Smart311 AI</h1>
-              <p className="text-gray-400 text-lg mb-12">Your city. Protected by AI.</p>
-
-              <div className="flex gap-3 mb-16">
-                <button
-                  onClick={() => setMode("voice")}
-                  className={`px-6 py-2 rounded-full font-medium transition-all ${
-                    mode === "voice"
-                      ? "bg-white/10 backdrop-blur-xl border border-white/20 text-white"
-                      : "text-gray-500 hover:text-white"
-                  }`}
-                >
-                  VOICE
-                </button>
-                <button
-                  onClick={() => setMode("vision")}
-                  className={`px-6 py-2 rounded-full font-medium transition-all ${
-                    mode === "vision"
-                      ? "bg-white/10 backdrop-blur-xl border border-white/20 text-white"
-                      : "text-gray-500 hover:text-white"
-                  }`}
-                >
-                  VISION
-                </button>
+            <motion.div key="idle" initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 1.1 }} className="flex-1 flex flex-col items-center justify-center p-6 text-center">
+              <div className="mb-12">
+                <h1 className="text-6xl font-black tracking-tighter uppercase mb-2">Smart<span className="text-[#00ff88]">311</span> AI</h1>
+                <p className="text-gray-500 font-bold tracking-[0.3em] uppercase text-xs">Emergency Response Portal</p>
               </div>
 
-              <motion.div
-                className="w-32 h-32 rounded-full bg-[#00ff88] mb-8 cursor-pointer"
-                onClick={handleStartRecording}
-                animate={{
-                  boxShadow: [
-                    "0 0 20px #00ff88",
-                    "0 0 40px #00ff88",
-                    "0 0 60px #00ff88",
-                    "0 0 40px #00ff88",
-                    "0 0 20px #00ff88",
-                  ],
-                }}
-                transition={{
-                  duration: 2,
-                  repeat: Infinity,
-                  ease: "easeInOut",
-                }}
-              />
+              <div className="glass-card p-1 rounded-xl mb-16 flex gap-1">
+                <button onClick={() => setMode("voice")} className={`px-8 py-2.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${mode === "voice" ? "bg-[#00ff88] text-black shadow-[0_0_20px_rgba(0,255,136,0.3)]" : "text-gray-500 hover:text-white"}`}>Voice</button>
+                <button onClick={() => setMode("vision")} className={`px-8 py-2.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${mode === "vision" ? "bg-[#00ff88] text-black shadow-[0_0_20px_rgba(0,255,136,0.3)]" : "text-gray-500 hover:text-white"}`}>Vision</button>
+                <button onClick={() => fileInputRef.current?.click()} className="px-8 py-2.5 rounded-lg text-[10px] font-black uppercase tracking-widest text-gray-500 hover:text-white transition-all">Upload</button>
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleImageUpload}
+                  accept="image/*"
+                  className="hidden"
+                />
+              </div>
 
-              <p className="text-gray-400 text-center">Tap to report an emergency</p>
+              <motion.div 
+                onClick={handleStart}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                className="w-40 h-40 rounded-full bg-[#00ff88]/10 border border-[#00ff88]/30 flex items-center justify-center cursor-pointer relative group"
+              >
+                <div className="absolute inset-0 rounded-full bg-[#00ff88]/20 animate-ping opacity-20" />
+                <div className="w-24 h-24 rounded-full bg-[#00ff88] shadow-[0_0_40px_rgba(0,255,136,0.4)] flex items-center justify-center">
+                  <span className="text-black font-black text-xs uppercase tracking-tighter group-hover:scale-110 transition-transform">Report</span>
+                </div>
+              </motion.div>
+
+              <p className="mt-12 text-gray-500 font-bold text-[10px] uppercase tracking-[0.2em] animate-pulse">Tap to initiate AI triage</p>
             </motion.div>
           )}
 
           {state === "conversation" && (
-            <motion.div
-              key="conversation"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="flex-1 flex flex-col p-6 pt-12"
-            >
-              {/* Header */}
-              <div className="flex items-center gap-2 mb-6">
-                <span className="w-3 h-3 rounded-full bg-red-500 animate-pulse" />
-                <span className="text-red-400 font-medium text-sm">LIVE — Gemini is listening</span>
+            <motion.div key="conversation" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex-1 w-full max-w-lg flex flex-col p-6 pt-12">
+              <div className="flex items-center gap-3 mb-8 bg-red-500/10 border border-red-500/20 px-4 py-2 rounded-full w-fit mx-auto">
+                <div className="w-2 h-2 rounded-full bg-red-500 critical-pulse" />
+                <span className="text-red-500 font-black text-[10px] uppercase tracking-widest">Live Uplink — Gemini Node active</span>
               </div>
 
-              {/* Message list — scrollable */}
-              <div className="flex-1 overflow-y-auto flex flex-col gap-3 mb-6">
+              <div className="flex-1 overflow-y-auto flex flex-col gap-4 mb-8 custom-scrollbar">
                 {messages.map((msg, i) => (
-                  <div
-                    key={i}
-                    className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm leading-relaxed ${
-                      msg.role === "user"
-                        ? "self-end bg-white/10 text-white"
-                        : "self-start bg-[#00ff88]/10 text-[#00ff88] border border-[#00ff88]/20"
-                    }`}
-                  >
+                  <motion.div key={i} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`max-w-[85%] rounded-2xl px-5 py-3 text-sm font-medium ${msg.role === "user" ? "self-end glass-card border-white/20" : "self-start bg-[#00ff88]/10 text-[#00ff88] border border-[#00ff88]/20"}`}>
                     {msg.text}
-                  </div>
+                  </motion.div>
                 ))}
-                {messages.length === 0 && (
-                  <p className="text-gray-500 text-sm text-center mt-8">Listening... describe the issue</p>
-                )}
               </div>
 
-              {/* STOP button */}
-              <button
-                onClick={handleStop}
-                className="w-full py-4 rounded-2xl bg-white/5 border border-white/10 text-white font-medium text-sm hover:bg-white/10 transition-all"
-              >
-                Stop & Generate Report
-              </button>
+              <button onClick={handleStop} className="w-full py-5 rounded-2xl bg-white text-black font-black uppercase tracking-widest text-xs hover:bg-[#00ff88] transition-all shadow-[0_0_30px_rgba(255,255,255,0.1)] active:scale-[0.98]">End & Analyze Report</button>
             </motion.div>
           )}
 
           {state === "analyzing" && (
-            <motion.div
-              key="analyzing"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="flex-1 flex flex-col items-center justify-center gap-4"
-            >
-              <div className="w-16 h-16 rounded-full border-4 border-[#00ff88] border-t-transparent animate-spin" />
-              <p className="text-[#00ff88] font-medium">Analyzing report...</p>
-              <p className="text-gray-500 text-sm">Checking nearby infrastructure</p>
+            <motion.div key="analyzing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex-1 flex flex-col items-center justify-center gap-6">
+              <div className="relative w-24 h-24">
+                <div className="absolute inset-0 border-4 border-[#00ff88]/20 rounded-full" />
+                <div className="absolute inset-0 border-4 border-[#00ff88] rounded-full border-t-transparent animate-spin" />
+                {isVisionScan && (
+                  <motion.div 
+                    initial={{ top: 0 }}
+                    animate={{ top: "100%" }}
+                    transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
+                    className="absolute left-0 right-0 h-0.5 bg-[#00ff88] shadow-[0_0_10px_#00ff88] z-10"
+                  />
+                )}
+              </div>
+              <div className="text-center">
+                <p className="text-[#00ff88] font-black tracking-[0.3em] uppercase text-xs mb-2">
+                  {isVisionScan ? "Neural Vision Scan" : "Neural Processing"}
+                </p>
+                <p className="text-gray-500 font-bold text-[10px] uppercase tracking-widest">
+                  {isVisionScan ? "Analyzing visual evidence..." : "Enriching spatial context data..."}
+                </p>
+              </div>
             </motion.div>
           )}
 
           {state === "draft" && draft && (
-            <motion.div
-              key="draft"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="flex-1 flex flex-col p-6 pt-12"
-            >
-              <p className="text-gray-400 text-sm text-center mb-4">Review your report</p>
+            <motion.div key="draft" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="flex-1 flex flex-col p-6 pt-12 w-full max-w-lg">
+              <p className="text-gray-500 font-black text-[10px] uppercase tracking-[0.3em] text-center mb-6">Review Generated Report</p>
               <DraftCard
                 severity={draft.label}
                 score={draft.severity}
-                complaintType={draft.complaint_type.replace("_", " ")}
+                complaintType={draft.complaint_type}
                 description={draft.description}
-                facilities={draft.facilities || []}
+                facilities={[]}
                 department={draft.department}
                 onConfirm={handleConfirm}
                 onEdit={() => { setState("idle"); setDraft(null); }}
-                fireStation={
-                  draft.nearby?.fire_stations?.[0]
-                    ? {
-                        name: draft.nearby.fire_stations[0].name,
-                        distance: draft.nearby.fire_stations[0].distance_m,
-                      }
-                    : null
-                }
+                fireStation={draft.nearby?.fire_stations?.[0] ? { name: draft.nearby.fire_stations[0].name, distance: draft.nearby.fire_stations[0].distance_m } : null}
                 priorComplaints={draft.nearby?.prior_complaints_30d ?? 0}
               />
             </motion.div>
           )}
 
           {state === "success" && (
-            <motion.div
-              key="success"
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="flex-1 flex flex-col items-center justify-center"
-            >
-              <motion.div
-                initial={{ scale: 0 }}
-                animate={{ scale: 1 }}
-                transition={{ type: "spring", duration: 0.5 }}
-                className="w-32 h-32 rounded-full bg-[#00ff88] flex items-center justify-center mb-8"
-              >
-                <svg className="w-16 h-16 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+            <motion.div key="success" initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} className="flex-1 flex flex-col items-center justify-center text-center">
+              <div className="w-24 h-24 rounded-full bg-[#00ff88] flex items-center justify-center mb-8 shadow-[0_0_50px_rgba(0,255,136,0.3)]">
+                <svg className="w-12 h-12 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" />
                 </svg>
-              </motion.div>
-              <h2 className="text-2xl font-bold text-white mb-2">Report Submitted!</h2>
-              <p className="text-gray-400">Redirecting to dashboard...</p>
+              </div>
+              <h2 className="text-4xl font-black uppercase tracking-tighter mb-2">Transmitted</h2>
+              <p className="text-gray-500 font-bold tracking-[0.2em] uppercase text-[10px]">Signal locked • Redirecting to Command Center</p>
             </motion.div>
           )}
         </AnimatePresence>
 
         {state === "idle" && coordinates && (
-          <div className="p-6 text-center">
-            <p className="text-gray-500 text-sm">
-              GPS: {coordinates.lat.toFixed(4)}, {coordinates.lon.toFixed(4)}
-              {isDemoLocation && " (demo location)"}
-            </p>
+          <div className="p-8">
+            <div className="px-4 py-2 rounded bg-black/40 border border-white/5 backdrop-blur-md">
+              <p className="text-[9px] text-gray-500 font-black tracking-widest uppercase">
+                GPS LOCK: {coordinates.lat.toFixed(4)}, {coordinates.lon.toFixed(4)} {isDemoLocation && "• SIMULATED"}
+              </p>
+            </div>
           </div>
         )}
       </div>
