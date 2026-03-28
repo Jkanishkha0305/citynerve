@@ -9,6 +9,8 @@ class NearbyFacilities:
     hospitals: list[dict]      # [{name, distance_m}]
     schools: list[dict]        # [{name, distance_m}]
     subway_entrances: list[dict]  # [{name, distance_m}]
+    fire_stations: list[dict]      # [{name, distance_m}]
+    prior_complaints_30d: int      # count of 311 complaints within 300m in last 30 days
 
 def haversine_m(lat1, lon1, lat2, lon2) -> float:
     R = 6371000
@@ -20,7 +22,7 @@ def haversine_m(lat1, lon1, lat2, lon2) -> float:
 def get_nearby_facilities(lat: float, lon: float, radius_m: int = 500) -> NearbyFacilities:
     """Fetch hospitals, schools, subway entrances within radius_m meters."""
 
-    def fetch_facilities(facgroup: str) -> list[dict]:
+    def fetch_facilities(facgroup: str, local_radius: int = radius_m) -> list[dict]:
         try:
             r = requests.get(FACILITIES_URL, params={
                 "$where": f"facgroup='{facgroup}'",
@@ -31,7 +33,7 @@ def get_nearby_facilities(lat: float, lon: float, radius_m: int = 500) -> Nearby
             for row in r.json():
                 try:
                     d = haversine_m(lat, lon, float(row['latitude']), float(row['longitude']))
-                    if d <= radius_m:
+                    if d <= local_radius:
                         results.append({"name": row['facname'], "distance_m": int(d)})
                 except (KeyError, ValueError):
                     pass
@@ -57,8 +59,34 @@ def get_nearby_facilities(lat: float, lon: float, radius_m: int = 500) -> Nearby
         except Exception:
             return []
 
+    def fetch_fire_stations():
+        # Same pattern as fetch_facilities but use facgroup='FIRE SERVICES'
+        # Filter: haversine_m <= 300m (not 500m)
+        return fetch_facilities('FIRE SERVICES', local_radius=300)
+
+    def fetch_311_history():
+        # Query NYC 311 historical data
+        URL = 'https://data.cityofnewyork.us/resource/erm2-nwe9.json'
+        from datetime import datetime, timedelta
+        cutoff = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%S')
+        try:
+            # Use a bounding box: lat ± 0.003 degrees (~300m), lon ± 0.003 degrees
+            r = requests.get(URL, params={
+                "$select": 'count(*) AS total',
+                "$where": f"latitude > '{lat-0.003}' AND latitude < '{lat+0.003}' AND longitude > '{lon-0.003}' AND longitude < '{lon+0.003}' AND created_date >= '{cutoff}'",
+                "$limit": '1'
+            }, timeout=5)
+            data = r.json()
+            if data and isinstance(data, list) and 'total' in data[0]:
+                return int(data[0]['total'])
+            return 0
+        except Exception:
+            return 0
+
     return NearbyFacilities(
         hospitals=fetch_facilities("HEALTH CARE"),
         schools=fetch_facilities("SCHOOLS (K-12)"),
         subway_entrances=fetch_subway(),
+        fire_stations=fetch_fire_stations(),
+        prior_complaints_30d=fetch_311_history(),
     )

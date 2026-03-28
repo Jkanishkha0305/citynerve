@@ -57,6 +57,20 @@ def calculate_severity(complaint_type: str, lat: float, lon: float,
         closest = min(nearby.subway_entrances, key=lambda x: x["distance_m"])
         reasons.append(f"Subway entrance within {closest['distance_m']}m ({closest['name']})")
 
+    # Fire station proximity
+    if nearby.fire_stations and any(f['distance_m'] <= 300 for f in nearby.fire_stations):
+        score += 15
+        closest = min(nearby.fire_stations, key=lambda x: x['distance_m'])
+        reasons.append(f"Fire station {closest['distance_m']}m away — rapid response zone")
+
+    # Prior complaint pattern
+    if nearby.prior_complaints_30d >= 10:
+        score += 20
+        reasons.append(f"Pattern alert: {nearby.prior_complaints_30d} complaints at this location in 30 days")
+    elif nearby.prior_complaints_30d >= 5:
+        score += 10
+        reasons.append(f"{nearby.prior_complaints_30d} prior complaints at this location this month")
+
     if 7 <= hour <= 9 or 17 <= hour <= 19:
         score += 20
         reasons.append("Rush hour — high public impact")

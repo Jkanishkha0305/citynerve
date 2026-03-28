@@ -105,7 +105,7 @@ async def seed_data():
     ]
     
     # For seed data, use minimal nearby (no spatial call to avoid startup delay)
-    empty_nearby = NearbyFacilities(hospitals=[], schools=[], subway_entrances=[])
+    empty_nearby = NearbyFacilities(hospitals=[], schools=[], subway_entrances=[], fire_stations=[], prior_complaints_30d=0)
 
     for i, (desc, lat, lon, c_type, _score, _label, _dept, address) in enumerate(demo_reports):
         severity = calculate_severity(c_type, lat, lon, 14, empty_nearby, 1)

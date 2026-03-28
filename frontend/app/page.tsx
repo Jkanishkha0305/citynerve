@@ -29,6 +29,13 @@ interface DraftData {
     name: string;
     distance: number;
   }>;
+  nearby?: {
+    fire_stations?: Array<{name: string; distance_m: number}>;
+    prior_complaints_30d?: number;
+    hospitals?: Array<{name: string; distance_m: number}>;
+    schools?: Array<{name: string; distance_m: number}>;
+    subway_entrances?: Array<{name: string; distance_m: number}>;
+  };
 }
 
 export default function CitizenApp() {
@@ -296,6 +303,11 @@ export default function CitizenApp() {
                 department={draft.department}
                 onConfirm={handleConfirm}
                 onEdit={handleEdit}
+                fireStation={draft.nearby?.fire_stations?.[0] ? {
+                  name: draft.nearby.fire_stations[0].name,
+                  distance: draft.nearby.fire_stations[0].distance_m
+                } : null}
+                priorComplaints={draft.nearby?.prior_complaints_30d ?? 0}
               />
             </motion.div>
           )}

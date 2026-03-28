@@ -13,3 +13,5 @@ def test_nearby_returns_dataclass():
     # but the tool has try/except blocks.
     res = get_nearby_facilities(40.75, -73.98)
     assert isinstance(res, NearbyFacilities)
+    assert hasattr(res, 'fire_stations')
+    assert hasattr(res, 'prior_complaints_30d')

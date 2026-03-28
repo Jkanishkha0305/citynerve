@@ -21,6 +21,8 @@ interface DraftCardProps {
   department: string;
   onConfirm: () => void;
   onEdit: () => void;
+  fireStation?: { name: string; distance: number } | null;
+  priorComplaints?: number;
 }
 
 const facilityEmojis: Record<string, string> = {
@@ -38,6 +40,8 @@ export function DraftCard({
   department,
   onConfirm,
   onEdit,
+  fireStation,
+  priorComplaints,
 }: DraftCardProps) {
   return (
     <Card className="glass-card p-6 rounded-2xl w-full max-w-md">
@@ -60,6 +64,20 @@ export function DraftCard({
             </div>
           ))}
         </div>
+
+        {fireStation && (
+          <div className='flex items-center gap-2 text-orange-400'>
+            <span>🚒</span>
+            <span>{fireStation.name.toLowerCase().replace(/\b\w/g, l => l.toUpperCase())}</span>
+            <span className='text-gray-500'>{fireStation.distance}m</span>
+          </div>
+        )}
+        {priorComplaints && priorComplaints >= 5 && (
+          <div className='flex items-center gap-2 text-yellow-400 text-sm'>
+            <span>🔄</span>
+            <span>{priorComplaints} complaints at this location in last 30 days</span>
+          </div>
+        )}
 
         <div className="text-[#00ff88] font-medium">
           → {department}
