@@ -44,6 +44,8 @@ async def submit_report(transcript: str, lat: float, lon: float,
         "hospitals": nearby.hospitals[:2],
         "schools": nearby.schools[:2],
         "subway_entrances": nearby.subway_entrances[:2],
+        "fire_stations": nearby.fire_stations[:1],
+        "prior_complaints_30d": nearby.prior_complaints_30d,
     }}
 
 async def confirm_report(report_id: str, correction: str | None = None) -> dict:
@@ -65,5 +67,5 @@ def _draft_text(report: Report, nearby, cluster_count: int) -> str:
     if nearby.hospitals: parts.append(f"I'm noting {nearby.hospitals[0]['name'].title()} is {nearby.hospitals[0]['distance_m']}m away.")
     if nearby.schools and 7 <= datetime.now().hour < 16: parts.append("A school is nearby during school hours.")
     if cluster_count > 1: parts.append(f"There are {cluster_count} related reports in this area.")
-    parts.append(f"Severity is {report.score}/100, routing to {report.department}. Ready to submit?")
+    parts.append(f"Severity is {report.severity}/100, routing to {report.department}. Ready to submit?")
     return " ".join(parts)
