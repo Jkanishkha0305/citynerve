@@ -55,19 +55,19 @@ We transitioned from a local prototype to a production-ready GCP architecture:
 ## 📸 Screenshots
 
 ### Citizen Emergency Response Portal
-![Citizen App](smart311-triage/assets/Screenshot%202026-03-28%20at%202.20.15%20PM.png)
+![Citizen App](assets/citizen-portal.png)
 
 ### AI Draft Review — Severity Score & Cluster Warning
-![Draft Review](smart311-triage/assets/Screenshot%202026-03-28%20at%202.20.43%20PM.png)
+![Draft Review](assets/draft-review.png)
 
 ### Tactical Command Center — Live Priority Queue & Map
-![Command Center](smart311-triage/assets/Screenshot%202026-03-28%20at%202.20.53%20PM.png)
+![Command Center](assets/command-center.png)
 
 ### Report Detail — Triage Factors & Dispatch
-![Report Detail](smart311-triage/assets/Screenshot%202026-03-28%20at%202.21.01%20PM.png)
+![Report Detail](assets/report-detail.png)
 
 ### Agent Intelligence Feed — Live AI Dispatch Steps
-![Agent Intelligence](smart311-triage/assets/Screenshot%202026-03-28%20at%202.21.29%20PM.png)
+![Agent Intelligence](assets/agent-feed.png)
 
 ---
 
