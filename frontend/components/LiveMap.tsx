@@ -16,6 +16,7 @@ const severityConfig: Record<Severity, { color: string; radius: number; fillOpac
 
 interface LiveMapProps {
   reports: Report[];
+  selectedReport?: Report | null;
 }
 
 function formatTimeAgo(isoString: string): string {
@@ -33,16 +34,24 @@ function formatTimeAgo(isoString: string): string {
   return `${diffHours}h ago`;
 }
 
-function MapController({ reports }: { reports: Report[] }) {
+function MapController({ reports, selectedReport }: { reports: Report[]; selectedReport?: Report | null }) {
   const map = useMap();
-  
+
+  // Fly to selected report
   useEffect(() => {
-    if (reports.length > 0) {
+    if (selectedReport) {
+      map.flyTo([selectedReport.lat, selectedReport.lon], 16, { duration: 0.8 });
+    }
+  }, [selectedReport, map]);
+
+  // Fit bounds on initial load
+  useEffect(() => {
+    if (reports.length > 0 && !selectedReport) {
       const bounds = reports.map(r => [r.lat, r.lon] as [number, number]);
       map.fitBounds(bounds as any, { padding: [50, 50] });
     }
-  }, [reports, map]);
-  
+  }, [reports.length, map, selectedReport]);
+
   return null;
 }
 
@@ -74,9 +83,9 @@ function findClusters(reports: Report[], threshold: number = 500): Array<{ lat: 
   return clusters.filter(c => c.count >= 3);
 }
 
-export function LiveMap({ reports }: LiveMapProps) {
+export function LiveMap({ reports, selectedReport }: LiveMapProps) {
   const clusters = findClusters(reports);
-  
+
   const center: [number, number] = reports.length > 0
     ? [reports[0].lat, reports[0].lon]
     : [40.7580, -73.9855];
@@ -92,22 +101,23 @@ export function LiveMap({ reports }: LiveMapProps) {
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
         url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
       />
-      
-      <MapController reports={reports} />
-      
+
+      <MapController reports={reports} selectedReport={selectedReport} />
+
       {reports.map((report, index) => {
         const config = severityConfig[report.label as Severity] || severityConfig.LOW;
-        
+        const isSelected = selectedReport?.id === report.id;
+
         return (
           <CircleMarker
             key={report.id || index}
             center={[report.lat, report.lon]}
-            radius={config.radius}
+            radius={isSelected ? config.radius * 2 : config.radius}
             pathOptions={{
-              color: config.color,
+              color: isSelected ? "#ffffff" : config.color,
               fillColor: config.color,
-              fillOpacity: config.fillOpacity,
-              weight: 2,
+              fillOpacity: isSelected ? 1 : config.fillOpacity,
+              weight: isSelected ? 3 : 2,
             }}
           >
             <Popup>

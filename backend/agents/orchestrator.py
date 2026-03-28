@@ -22,6 +22,13 @@ def _emit(agent: str, status: str, msg: str, report_id: str = ""):
         "icon": _ICONS.get(agent, "•"),
         "color": _COLORS.get(agent, "gray"),
     })
+    
+    # GCP Cloud Logging Integration
+    try:
+        from tools.gcp_logger import log_agent_event
+        log_agent_event(agent, status, msg, report_id)
+    except ImportError:
+        pass
 
 async def submit_report(transcript: str, lat: float, lon: float,
                         image_description: str | None = None,
@@ -102,6 +109,14 @@ async def submit_report(transcript: str, lat: float, lon: float,
         submitted_at=datetime.now()
     )
     report_store.add(report)
+    
+    # GCP Firestore Sync
+    try:
+        from tools.gcp_firestore import save_report_to_firestore
+        save_report_to_firestore(report.to_dict())
+    except ImportError:
+        pass
+
     _emit("Orchestrator", "done", f"✓ Dispatched → {severity.department}", report_id)
 
     draft = _draft_text(report, nearby, len(clusters)+1)
@@ -125,6 +140,16 @@ async def confirm_report(report_id: str, correction: str | None = None) -> dict:
                             severity=severity.score, label=severity.label,
                             department=severity.department, reasons=severity.reasons)
     report_store.update(report_id, status="DISPATCHED")
+    
+    # GCP Firestore Sync
+    try:
+        from tools.gcp_firestore import save_report_to_firestore
+        updated = report_store.get_by_id(report_id)
+        if updated:
+            save_report_to_firestore(updated.to_dict())
+    except ImportError:
+        pass
+
     return report_store.get_by_id(report_id).to_dict()
 
 def _draft_text(report: Report, nearby, cluster_count: int) -> str:

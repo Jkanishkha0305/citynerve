@@ -126,10 +126,14 @@ export default function DashboardPage() {
   const { queue, connected, reconnecting } = useQueue();
   const { runs } = useAgentEvents();
   const [selectedReport, setSelectedReport] = useState<Report | null>(null);
-  const [loading311, setLoading311] = useState(false);
   const [dispatchPlan, setDispatchPlan] = useState<DispatchPlan | null>(null);
   const [dispatching, setDispatching] = useState(false);
   const [dispatchedId, setDispatchedId] = useState<string | null>(null);
+
+  // Auto-load NYC 311 data once on mount (background, silent)
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/load-311`, { method: "POST" }).catch(() => {});
+  }, []);
 
   const sortedQueue = useMemo(() => {
     const severityOrder = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
@@ -157,32 +161,6 @@ export default function DashboardPage() {
       }
     }
   }, [queue.length]);
-
-  const handleLoad311 = async () => {
-    setLoading311(true);
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/load-311`, { method: "POST" });
-      const data = await response.json();
-      toast.success(`DATA INGESTION COMPLETE: +${data.loaded} RECORDS`, {
-        className: "glass-card border-[#00ff88]/50 text-[#00ff88] font-bold",
-      });
-    } catch {
-      toast.error("Failed to load NYC 311 data");
-    } finally {
-      setLoading311(false);
-    }
-  };
-
-  const handleSimulate = async () => {
-    try {
-      await fetch(`${API_BASE_URL}/api/simulate`, { method: "POST" });
-      toast.success("CLUSTER SIMULATION TRIGGERED — 5 gas leak reports near Times Square", {
-        className: "glass-card border-orange-400/50 text-orange-400 font-bold",
-      });
-    } catch {
-      toast.error("Simulate failed");
-    }
-  };
 
   const handleDispatch = async () => {
     if (!selectedReport) return;
@@ -249,19 +227,10 @@ export default function DashboardPage() {
           </div>
 
           <div className="flex items-center gap-3">
-            <Button
-              onClick={handleSimulate}
-              className="bg-orange-500/20 text-orange-400 hover:bg-orange-500/30 font-black tracking-widest text-[10px] uppercase h-10 px-4 rounded-md border border-orange-500/30 transition-all"
-            >
-              Sim Cluster
-            </Button>
-            <Button
-              onClick={handleLoad311}
-              disabled={loading311}
-              className="bg-[#00ff88] text-black hover:bg-[#00cc6a] font-black tracking-widest text-[10px] uppercase h-10 px-6 rounded-md shadow-[0_0_20px_rgba(0,255,136,0.2)] transition-all border-none"
-            >
-              {loading311 ? "INGESTING..." : "Sync NYC Data"}
-            </Button>
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded bg-[#00ff88]/5 border border-[#00ff88]/20">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#00ff88] animate-pulse" />
+              <span className="text-[9px] font-black text-[#00ff88] tracking-widest uppercase">NYC 311 Live Feed</span>
+            </div>
           </div>
         </div>
       </header>
@@ -306,7 +275,7 @@ export default function DashboardPage() {
             <span className="text-[9px] text-[#00ff88] font-black tracking-[0.3em] uppercase">Tactical Visualizer</span>
           </div>
           <div className="h-full rounded-2xl overflow-hidden border border-white/10 shadow-2xl glass-card">
-            <LiveMap reports={queue} />
+            <LiveMap reports={queue} selectedReport={selectedReport} />
           </div>
         </div>
 
