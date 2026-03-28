@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.env
+.venv
+venv/
+.pytest_cache/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.env.local
+npm-debug.log*
+
+# OS
+.DS_Store
+
+# Specs (internal only)
+backend/BACKEND_UPGRADE_SPEC.md
+backend/BACKEND_SPEC.md
+frontend/REDESIGN_SPEC.md
