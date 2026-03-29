@@ -1,23 +1,24 @@
-# Python
-__pycache__/
-*.py[cod]
-.env
-.venv
-venv/
-.pytest_cache/
-
-# Node / Next.js
+# Node
 node_modules/
 .next/
-out/
+.nuxt/
+dist/
+build/
+.cache/
+*.tsbuildinfo
+
+# Env
+.env
 .env.local
-npm-debug.log*
+.env.*.local
 
-# OS
+# IDE
+.idea/
+.vscode/
 .DS_Store
+Thumbs.db
 
-# Specs (internal only)
-backend/BACKEND_UPGRADE_SPEC.md
-backend/BACKEND_SPEC.md
-frontend/REDESIGN_SPEC.md
-.gstack/
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
