@@ -9,6 +9,12 @@
 **Smart311 AI** transforms chaotic city reporting into a surgical, high-tech dispatch pipeline. Built for the *Build With AI NYC Hackathon*, it uses multi-modal Gemini to "see" and "hear" emergencies, triaging them against real NYC Open Data infrastructure maps in milliseconds.
 
 </div>
+---
+
+## 👥 Team & Contributors
+
+*   **Kanishkha Jaisankar** - kj2675@nyu.edu
+*   **Jeethu Srinvas Amuthan** - ja5163@nyu.edu
 
 ---
 
@@ -118,13 +124,6 @@ GEMINI_API_KEY=your-api-key
 2.  **The Scan**: Show the **Neural Vision Scan** animation as Gemini analyzes the image.
 3.  **The Command**: Switch to the **Dashboard**. Watch the report jump to the top of the **Priority Queue**.
 4.  **The Proof**: Show the **Intelligence Feed**—where the AI explains *why* it scored the report a "95/100" (e.g., "Proximity to Hospital + Cluster detected").
-
----
-
-## 👥 Team & Contributors
-
-*   **Kanishkha Jaisankar** - kj2675@nyu.edu
-*   **Jeethu Srinvas Amuthan** - ja5163@nyu.edu
 
 ---
 
