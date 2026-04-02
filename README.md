@@ -9,7 +9,6 @@
 **Smart311 AI** transforms chaotic city reporting into a surgical, high-tech dispatch pipeline. Built for the *Build With AI NYC Hackathon*, it uses multi-modal Gemini to "see" and "hear" emergencies, triaging them against real NYC Open Data infrastructure maps in milliseconds.
 
 </div>
----
 
 ## 👥 Team & Contributors
 
